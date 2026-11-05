@@ -48,7 +48,7 @@ small{display:block;text-align:center;color:var(--mu);margin-top:8px;font-size:1
     <button id="rep" title="Repetir (R)">↻</button>
   </div>
   <div class="vol">🔈<input type="range" id="vol" min="0" max="1" step="0.01" value="0.8"></div>
-  <div class="drop" id="drop">Arrastra tus canciones aquí o <button id="pick">elegir archivos</button></div>
+  <div class="drop" id="drop">Arrastra tus canciones aquí o <button id="pick">elegir archivos</button> <button id="clr">limpiar lista</button></div>
   <input type="file" id="files" accept="audio/*" multiple hidden>
   <ul id="list"></ul>
 </div>
@@ -62,19 +62,46 @@ function add(fs){
   [...fs].filter(f=>f.type.startsWith('audio')||/\.(mp3|ogg|wav|flac|m4a|aac)$/i.test(f.name))
     .forEach(f=>q.push({n:name(f),u:URL.createObjectURL(f),f}));
   draw(); if(i<0&&q.length)load(0,true);
+  q.forEach(s=>getCover(s).then(()=>{draw();if(q[i]===s)show(s)}));
+  save();
 }
 function draw(){
   $('list').innerHTML='';
   q.forEach((s,k)=>{const li=document.createElement('li');if(k===i)li.className='cur';
-    const n=document.createElement('span');n.textContent=(k+1)+'. '+s.n;li.append(n);
+    const n=document.createElement('span');n.textContent=(k+1)+'. '+label(s);li.append(n);
     li.onclick=()=>load(k,true);$('list').append(li)});
 }
 function load(k,go){
-  i=k;au.src=q[k].u;$('title').textContent=q[k].n;draw();setCover(k);
+  i=k;au.src=q[k].u;show(q[k]);draw();setCover(k);
   if(go)au.play().catch(()=>{});
 }
-async function getCover(s){
-  if(s.c!==undefined)return s.c;
+const label=s=>s.t?(s.a?s.a+' — ':'')+s.t:s.n;
+function show(s){
+  $('title').textContent=label(s);
+  if('mediaSession' in navigator)getCover(s).then(c=>{try{navigator.mediaSession.metadata=new MediaMetadata({title:s.t||s.n,artist:s.a||'',artwork:c?[{src:c}]:[]})}catch(e){}});
+}
+function txt(b,o,end){
+  const e=b[o++],u=b.slice(o,end);
+  const enc=e===0?'iso-8859-1':e===3?'utf-8':e===2?'utf-16be':(u[0]===0xFE&&u[1]===0xFF?'utf-16be':'utf-16le');
+  try{return new TextDecoder(enc).decode(u).replace(/\0/g,'').trim()}catch(x){return ''}
+}
+const dbo=()=>new Promise((res,rej)=>{const r=indexedDB.open('mp3player',1);r.onupgradeneeded=()=>r.result.createObjectStore('s');r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)});
+async function save(){
+  try{const d=await dbo();d.transaction('s','readwrite').objectStore('s').put(q.map(s=>({n:s.n,f:s.f})),'q')}catch(e){}
+}
+async function restore(){
+  try{
+    const d=await dbo(),r=d.transaction('s').objectStore('s').get('q');
+    r.onsuccess=()=>{
+      const a=r.result;if(!a||!a.length||q.length)return;
+      a.forEach(o=>q.push({n:o.n,u:URL.createObjectURL(o.f),f:o.f}));
+      load(0,false);
+      q.forEach(s=>getCover(s).then(()=>{draw();if(q[i]===s)show(s)}));
+    };
+  }catch(e){}
+}
+function getCover(s){return s.p||(s.p=parse(s))}
+async function parse(s){
   s.c=null;
   try{
     const h=new Uint8Array(await s.f.slice(0,10).arrayBuffer());
@@ -88,6 +115,7 @@ async function getCover(s){
       const fs=ver===4?((b[p+4]&127)<<21)|((b[p+5]&127)<<14)|((b[p+6]&127)<<7)|(b[p+7]&127):(((b[p+4]<<24)|(b[p+5]<<16)|(b[p+6]<<8)|b[p+7])>>>0);
       if(!fs)break;
       const end=p+10+fs;
+      if(id==='TIT2'||id==='TPE1'){const t=txt(b,p+10,end);if(id==='TIT2')s.t=t;else s.a=t}
       if(id==='APIC'){
         let o=p+10;const enc=b[o++];
         let m='';while(b[o]!==0&&o<end)m+=String.fromCharCode(b[o++]);
@@ -95,7 +123,6 @@ async function getCover(s){
         if(enc===1||enc===2){while(!(b[o]===0&&b[o+1]===0)&&o<end)o+=2;o+=2}
         else{while(b[o]!==0&&o<end)o++;o++}
         s.c=URL.createObjectURL(new Blob([b.slice(o,end)],{type:m.includes('/')?m:'image/jpeg'}));
-        break;
       }
       p=end;
     }
@@ -105,6 +132,7 @@ async function getCover(s){
 async function setCover(k){
   const el=$('cover'),c=await getCover(q[k]);
   if(i!==k)return;
+  show(q[k]);
   el.textContent='';
   if(c){const im=new Image();im.alt='Carátula';im.src=c;el.append(im)}else el.textContent='♪';
 }
@@ -132,6 +160,21 @@ $('play').onclick=toggle;$('next').onclick=nxt;$('prev').onclick=prv;
 $('shuf').onclick=e=>{shuf=!shuf;e.currentTarget.classList.toggle('on',shuf)};
 $('rep').onclick=e=>{rep=!rep;e.currentTarget.classList.toggle('on',rep)};
 $('pick').onclick=()=>$('files').click();
+$('clr').onclick=()=>{
+  au.pause();au.removeAttribute('src');au.load();
+  q.forEach(s=>{URL.revokeObjectURL(s.u);if(s.c)URL.revokeObjectURL(s.c)});
+  q=[];i=-1;$('title').textContent='Sin canción';$('cover').textContent='♪';
+  $('cur').textContent='0:00';$('dur').textContent='0:00';$('seek').value=0;draw();save();
+};
+if('mediaSession' in navigator){try{
+  const ms=navigator.mediaSession;
+  ms.setActionHandler('play',()=>au.play());
+  ms.setActionHandler('pause',()=>au.pause());
+  ms.setActionHandler('previoustrack',prv);
+  ms.setActionHandler('nexttrack',nxt);
+  ms.setActionHandler('seekto',e=>{au.currentTime=e.seekTime});
+}catch(e){}}
+restore();
 $('files').onchange=e=>{add(e.target.files);e.target.value=''};
 au.onplay=()=>{initAudio();$('play').textContent='⏸'};
 au.onpause=()=>$('play').textContent='▶';
